@@ -69,11 +69,11 @@ module PrefixTree{
 		match(syls) {
 			case []: []
 			case [syl]: // found
-				indb = ?/IME/prefix_tree[~{pfx,syl}].{candidates,children}
+				indb = ?/IME/prefix_tree[~{pfx,syl}].{candidates,children,trs}
 				match(indb){
 					case {none}: []
 					case ~{some}: 
-						acc = List.add(some.candidates,acc)
+						acc = List.add(annotate_candidate_list(some.candidates,some.trs),acc)
 						pfx = append_to_pfx(pfx,syl)
 						List.fold_left(function(a,chld){lookup_prefix(pfx,[chld],a)},acc,some.children)
 				}
@@ -116,21 +116,25 @@ module PrefixTree{
 
 	function generate_next_data(syl,p) {
 		match((syl.final,syl.tone)){
-			case ("",""): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med].{candidates,syl,pfx,children})
-			case ("",_): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.tone==syl.tone].{candidates,syl,pfx,children})
-			case (_,""): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.final==syl.final].{candidates,syl,pfx,children})
-			case _:  fuzzy_opt2(/IME/prefix_tree[pfx==p and syl==syl].{candidates,syl,pfx,children})
+			case ("",""): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med].{candidates,syl,pfx,children,trs})
+			case ("",_): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.tone==syl.tone].{candidates,syl,pfx,children,trs})
+			case (_,""): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.final==syl.final].{candidates,syl,pfx,children,trs})
+			case _:  fuzzy_opt2(/IME/prefix_tree[pfx==p and syl==syl].{candidates,syl,pfx,children,trs})
 		}
 	}
 
 
-	function list(string) fuzzy_lookup_prefix(syls){
+	function annotate_candidate_list(candidates,trs){
+	List.map(function(x){{hj:x,~trs}},candidates)
+	}
+
+	function fuzzy_lookup_prefix(syls){
 		recursive function aux(pfx_list,syls, cand_list){
 			match(syls){
 				case []: [] //empty query
 				case [syl]: //reach the end of the query
 					next_data = List.flatten(List.filter_map( generate_next_data(syl,_),pfx_list))
-					cand_list = List.fold_left(function(a,l){List.add(l,a)},cand_list, List.map(function(x){x.candidates},next_data))
+					cand_list = List.fold_left(function(a,l){List.add(l,a)},cand_list, List.map(function(x){annotate_candidate_list(x.candidates,x.trs)},next_data))
 					follow_up = List.map(function(x){(append_to_pfx(x.pfx,x.syl),x.children)},next_data)
 					follow_up = List.flatten(List.map(function(x){List.map(function(chld){{pfx:x.f1,syl:chld}},x.f2)},follow_up))
 					List.add(cand_list, List.map(function(child){lookup_prefix(child.pfx,[child.syl],[])},follow_up))
