@@ -35,6 +35,7 @@ module PrefixTree{
 				match(indb){
 					case {none}: /IME/prefix_tree[{~pfx, ~syl}] <- {~pfx, ~syl, children: [], candidates:[hj], ~trs}
 					case {some: _}: /IME/prefix_tree[{~pfx,~syl}]/candidates <+ hj
+													/IME/prefix_tree[{~pfx,~syl}]/trs <- trs
 				}
 				{success}
 			case [syl|tl]: //prefixing
