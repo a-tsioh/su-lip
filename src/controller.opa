@@ -32,7 +32,7 @@ module Controller {
 				case {success}:	Resource.raw_response("ok","text/plain",{success})
 				case {failure}: Resource.raw_response("database already loaded","text/plain",{success})
 				}
-			case {~path ...}: Resource.raw_status({bad_request})
+			case {path: _ ...}: Resource.raw_status({bad_request})
 		}
 	}
 

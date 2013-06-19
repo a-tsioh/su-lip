@@ -1,12 +1,21 @@
 database IME {
-  // database declarations go here
+  // loaded = 1 iff the data has been loaded into mongdb already
+	// you have to manually delete the db to be able to re-call the loading function
 	int /loaded
+
+	// the data is stored as a tree indexed with a record of a prefix and the last syllabe of a form
 	node /prefix_tree[{pfx,syl}]
 }
 
 
+
+// a syllabe is analyzed as an initial (consonnant), a medial voyel cluster, a final consonnant and a tone
 type syllabe = {string init, string med, string final, string tone}
 
+
+// a node of the prefix tree contains its key elements, 
+// a list of the syllables that lead to its children,
+// a list of candidates in 漢字 and a spelling in Taiwan Romanization System (trs)
 type node = {
 	string pfx,
 	syllabe syl,
@@ -17,16 +26,15 @@ type node = {
 
 
 
-
-//poj_re = ur"(Ø|w|t|s|si|h|b|ch|chi|chh|chhi|g|j|ji|k|kh|l|m|n|ng|p|ph|th)?([aeiou]+|ng|m)(ng|nn|N|m|n|p|t|h|k)?[1-8]?"
-//tl_re = re.compile( ur"(Ø|w|t|s|h|b|ts|tsh|g|j|kh|k|l|m|n|ng|p|ph|th)?([aeiou]+|ng|m)(ng|nn|N|m|n)?(p|t|h|k)?([1-8]?)",re.I)
-
-
+// module to manipulate the Tree
 module PrefixTree{
+
+	// build a new prefix by adding a syllable at the end from a prefix
 	function append_to_pfx(pfx,syl){
 		"{pfx}-{Model.string_of_syllabe(syl)}"
 	}
 
+	// add some data to the DB at some point in the Tree
 	function add_with_prefix(pfx,syls,hj,trs){
 		match(syls){
 			case []:{failure}
@@ -34,8 +42,10 @@ module PrefixTree{
 				indb = ?/IME/prefix_tree[{~pfx, ~syl}]
 				match(indb){
 					case {none}: /IME/prefix_tree[{~pfx, ~syl}] <- {~pfx, ~syl, children: [], candidates:[hj], ~trs}
-					case {some: _}: /IME/prefix_tree[{~pfx,~syl}]/candidates <+ hj
-													/IME/prefix_tree[{~pfx,~syl}]/trs <- trs
+					case {some: entry}:
+						if(List.contains(hj,entry.candidates) == {false})
+							/IME/prefix_tree[{~pfx,~syl}]/candidates <+ hj
+						/IME/prefix_tree[{~pfx,~syl}]/trs <- trs
 				}
 				{success}
 			case [syl|tl]: //prefixing
@@ -44,17 +54,22 @@ module PrefixTree{
 					case {none}: 
 						/IME/prefix_tree[~{pfx,syl}] <- {~pfx, ~syl, children: [List.head(tl)], candidates:[], trs:""}
 						add_with_prefix(append_to_pfx(pfx,syl),tl,hj,trs)
-					case {some: _}:
-						/IME/prefix_tree[~{pfx,syl}]/children <+ List.head(tl)
+					case {some: entry}:
+						next = List.head(tl)
+						if(List.contains(next, entry.children) == {false})
+							/IME/prefix_tree[~{pfx,syl}]/children <+ List.head(tl)
 						add_with_prefix(append_to_pfx(pfx,syl), tl, hj, trs)
 				}
 		}
 	}
+
+	// add data to the DB from the root of the Tree
 	function add(syls,hj,trs){
 		add_with_prefix("",syls,hj,trs)
 	}
 	
 	
+	// return a couple (prefix,syllable) from a list of syllables
 	function syls_to_pfx_syl(syls){
 		recursive function recf(pfx,syls){
 			match(syls) {
@@ -66,47 +81,22 @@ module PrefixTree{
 		recf("",syls)
 	}
 
-	function lookup_prefix(pfx,syls,acc){
-		match(syls) {
-			case []: []
-			case [syl]: // found
-				indb = ?/IME/prefix_tree[~{pfx,syl}].{candidates,children,trs}
-				match(indb){
-					case {none}: []
-					case ~{some}: 
-						acc = List.add(annotate_candidate_list(some.candidates,some.trs),acc)
-						pfx = append_to_pfx(pfx,syl)
-						List.fold_left(function(a,chld){lookup_prefix(pfx,[chld],a)},acc,some.children)
-				}
-			case [syl|tl]: // browsing prefix
-				lookup_prefix(append_to_pfx(pfx,syl),tl,acc)
-			}
-	
-	}
 
-	function rec_lookup(syls){
-		match(syls_to_pfx_syl(syls)){
-			case {none}: {none}
-			case {some: (pfx,syl)}:
-				indb = ?/IME/prefix_tree[~{pfx,syl}]/candidates
-				match(indb){
-					case {none}: {none}
-					case ~{some}: {~some}
-				}
+	// query the DB for all the possible continuations from a node in the Tree
+	function lookup_prefix(pfx,syl,acc){
+		indb = ?/IME/prefix_tree[~{pfx,syl}].{candidates,children,trs}
+		match(indb){
+			case {none}: acc //nothing to add
+			case ~{some}: 
+				acc = List.add(annotate_candidate_list(some),acc)
+				pfx = append_to_pfx(pfx,syl)
+				List.fold_left(function(a,chld){lookup_prefix(pfx,chld,a)},acc,some.children)
 		}
 	}
 
+
+	// convert a DbSet to an option list of data
 	function fuzzy_opt(dbs){
-		l = Iter.to_list(DbSet.iterator(dbs))
-		fl = List.flatten(l)
-		match(fl){
-			case []: {none}
-			case _: {some:fl}
-		}
-
-	}
-
-	function fuzzy_opt2(dbs){
 		l = Iter.to_list(DbSet.iterator(dbs))
 		match(l){
 			case []: {none}
@@ -115,43 +105,51 @@ module PrefixTree{
 
 	}
 
+	// query the DB, the fuzzy way
 	function generate_next_data(syl,p) {
 		match((syl.final,syl.tone)){
-			case ("",""): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med].{candidates,syl,pfx,children,trs})
-			case ("",_): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.tone==syl.tone].{candidates,syl,pfx,children,trs})
-			case (_,""): fuzzy_opt2(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.final==syl.final].{candidates,syl,pfx,children,trs})
-			case _:  fuzzy_opt2(/IME/prefix_tree[pfx==p and syl==syl].{candidates,syl,pfx,children,trs})
+			case ("",""): fuzzy_opt(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med].{candidates,syl,pfx,children,trs})
+			case ("",_): fuzzy_opt(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.tone==syl.tone].{candidates,syl,pfx,children,trs})
+			case (_,""): fuzzy_opt(/IME/prefix_tree[pfx==p and syl.init==syl.init and syl.med==syl.med and syl.final==syl.final].{candidates,syl,pfx,children,trs})
+			case _:  fuzzy_opt(/IME/prefix_tree[pfx==p and syl==syl].{candidates,syl,pfx,children,trs})
 		}
 	}
 
-
-	function annotate_candidate_list(candidates,trs){
-	List.map(function(x){{hj:x,~trs}},candidates)
+	// add TRS to each candidate of a list (build a list of records)
+	function annotate_candidate_list(solution){
+		trs = solution.trs
+		candidates = solution.candidates
+		List.map(function(x){{hj:x,~trs}},candidates)
 	}
 
+
+	// Fuzzy Query function that allow for underspecified syllables
 	function fuzzy_lookup_prefix(syls){
-		recursive function aux(pfx_list,syls, cand_list){
+		recursive function aux(pfx_list,syls){
 			match(syls){
-				case []: [] //empty query
-				case [syl]: //reach the end of the query
+				case []: {fuzzy:[], fuzzy_prefix:[]} //empty result for an empty query
+				case [syl]: //last syllable of the query
 					next_data = List.flatten(List.filter_map( generate_next_data(syl,_),pfx_list))
-					cand_list = List.fold_left(function(a,l){List.add(l,a)},cand_list, List.map(function(x){annotate_candidate_list(x.candidates,x.trs)},next_data))
+					//cand_list = List.fold_left(function(a,l){List.add(l,a)},cand_list, List.map(function(x){annotate_candidate_list(x.candidates,x.trs)},next_data))
+					cand_list = List.map(annotate_candidate_list,next_data)
 					follow_up = List.map(function(x){(append_to_pfx(x.pfx,x.syl),x.children)},next_data)
 					follow_up = List.flatten(List.map(function(x){List.map(function(chld){{pfx:x.f1,syl:chld}},x.f2)},follow_up))
-					List.add(cand_list, List.map(function(child){lookup_prefix(child.pfx,[child.syl],[])},follow_up))
-				case [syl|tl] : // query continue
-					next_data = List.flatten(List.filter_map( generate_next_data(syl,_),pfx_list))
+					//List.add(cand_list, List.map(function(child){lookup_prefix(child.pfx,[child.syl],[])},follow_up))
+					completion = List.map(function(child){lookup_prefix(child.pfx,child.syl,[])},follow_up)
+					{fuzzy:List.flatten(cand_list), fuzzy_prefix:List.flatten(List.flatten(completion))}
+				case [syl|tl] : // basic case
+					next_data = List.flatten(List.filter_map(generate_next_data(syl,_),pfx_list))
 					pfx_list = List.map(function(x){append_to_pfx(x.pfx,x.syl)},next_data)
-					aux(pfx_list,tl,cand_list)
+					aux(pfx_list,tl)
 			}
 		}
-		List.flatten(List.flatten(aux([""],syls,[])))
+		aux([""],syls)
 	}
 
 
 		
 
-
+/*
 	function fuzzy_lookup(syls){
 		match(syls_to_pfx_syl(syls)){
 			case {none}: {none}
@@ -163,7 +161,7 @@ module PrefixTree{
 					case (_,_):  ?/IME/prefix_tree[~{pfx,syl}]/candidates
 				}
 		}
-	}
+	}*/
 
 				
 	
@@ -191,7 +189,7 @@ module Model {
 	function lookup(trs){
 		sl = trs_to_syl_list_opt(trs)
 		res = match(sl) {
-			case {none}: []
+			case {none}: {fuzzy:[], fuzzy_prefix:[]}
 			case ~{some}: PrefixTree.fuzzy_lookup_prefix(some)
 			//{some: List.flatten(PrefixTree.lookup_prefix("",some,[]))}
 		}
@@ -201,8 +199,8 @@ module Model {
 	function query(js){
 		match(js){
 			case {~query }: result = lookup(query)
-				OpaSerialize.Json.serialize({fuzzy:result}) |> Json.to_string
-			default:	OpaSerialize.Json.serialize({fuzzy:[]}) |> Json.to_string
+				OpaSerialize.Json.serialize(result) |> Json.to_string
+			default:	OpaSerialize.Json.serialize({fuzzy:[],fuzzy_prefix:[]}) |> Json.to_string
 		}	
 	
 	}
@@ -242,6 +240,7 @@ module Model {
 		if(/IME/loaded == 0) { 
 		List.iter(function(l){(hz,trs) = split_line(l);  add_couple(trs,hz) |> ignore },load_file(Config.datafile))
 		/IME/loaded <- 1
+		println("done")
 		{success}}
 		else {
 			{failure}
